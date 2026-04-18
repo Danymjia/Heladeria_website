@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 
-export async function PUT(req: Request, context: any) {
+export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const { id } = context.params;
+    const { id } = await params;
     const body = await req.json();
     
     // update status to 'delivered' generally
