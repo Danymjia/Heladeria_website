@@ -10,6 +10,9 @@ export const metadata: Metadata = {
   title: "Ciocolatto - Gestor de Heladería",
   description: "Sistema de gestión para Ciocolatto",
   generator: "v0.app",
+  icons: {
+    icon: "/favicon.ico",
+  },
 }
 
 export default function RootLayout({
