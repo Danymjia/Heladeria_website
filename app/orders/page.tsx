@@ -65,6 +65,7 @@ export default function OrdersPage() {
   
   const [showPendingModal, setShowPendingModal] = useState(false)
   const [pendingOrders, setPendingOrders] = useState<any[]>([])
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false)
 
   useEffect(() => {
     fetchProducts()
@@ -398,19 +399,26 @@ export default function OrdersPage() {
       return
     }
 
+    const loadingToast = toast.loading("Preparando reporte de ventas...")
+    setIsGeneratingPdf(true)
+
     try {
       const res = await fetch("/api/sales/today")
+      if (!res.ok) throw new Error("Error al obtener las ventas")
+      
       const sales = await res.json()
-      if (!res.ok) throw new Error("Error fetching sales")
+      
       if (sales.length === 0) {
-        toast("No hay ventas para generar el reporte.", { icon: "ℹ️" })
+        toast.dismiss(loadingToast)
+        toast("No hay ventas registradas hoy para generar el reporte.", { icon: "ℹ️" })
+        setIsGeneratingPdf(false)
         return
       }
 
       // ── Metrics ───────────────────────────────────────────────
-      const totalRevenue = sales.reduce((s: number, v: any) => s + Number(v.total), 0)
-      const cashRevenue  = sales.filter((s: any) => s.payment_method === 'efectivo').reduce((s: number, v: any) => s + Number(v.total), 0)
-      const transRevenue = sales.filter((s: any) => s.payment_method === 'transferencia').reduce((s: number, v: any) => s + Number(v.total), 0)
+      const totalRevenue = sales.reduce((s: number, v: any) => s + (Number(v.total) || 0), 0)
+      const cashRevenue  = sales.filter((s: any) => s.payment_method === 'efectivo').reduce((s: number, v: any) => s + (Number(v.total) || 0), 0)
+      const transRevenue = sales.filter((s: any) => s.payment_method === 'transferencia').reduce((s: number, v: any) => s + (Number(v.total) || 0), 0)
       const avgTicket    = totalRevenue / sales.length
       const dateStr      = new Date().toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
       const timeStr      = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
@@ -419,8 +427,10 @@ export default function OrdersPage() {
       const productMap: Record<string, number> = {}
       sales.forEach((sale: any) => {
         ;(sale.items || []).forEach((item: any) => {
-          const base = item.name.split('(')[0].trim()
-          productMap[base] = (productMap[base] || 0) + (item.quantity || 1)
+          if (item && item.name) {
+            const base = item.name.split('(')[0].trim()
+            productMap[base] = (productMap[base] || 0) + (item.quantity || 1)
+          }
         })
       })
       const topProducts = Object.entries(productMap).sort((a, b) => b[1] - a[1]).slice(0, 5)
@@ -504,10 +514,14 @@ export default function OrdersPage() {
         head: [['#', 'Hora', 'Productos', 'Pago', 'Total']],
         body: sales.map((sale: any, idx: number) => [
           `#${String(idx + 1).padStart(2, '0')}`,
-          new Date(sale.created_at).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
-          (sale.items || []).map((it: any) => `${it.quantity ?? 1}× ${it.name.split('(')[0].trim()}`).join(', ') || '—',
+          sale.created_at ? new Date(sale.created_at).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : '--:--',
+          (sale.items || []).map((it: any) => {
+            const name = it.name ? it.name.split('(')[0].trim() : 'Producto';
+            const qty = it.quantity ?? 1;
+            return `${qty}× ${name}`;
+          }).join(', ') || '—',
           sale.payment_method === 'efectivo' ? 'Efectivo' : 'Transf.',
-          `$${Number(sale.total).toFixed(2)}`
+          `$${(Number(sale.total) || 0).toFixed(2)}`
         ]),
         styles:             { fontSize: 7.5, cellPadding: 3, textColor: DARK, lineColor: [225,225,225], lineWidth: 0.2 },
         headStyles:         { fillColor: DARK, textColor: WHITE, fontStyle: 'bold', fontSize: 7.5 },
@@ -583,14 +597,29 @@ export default function OrdersPage() {
       doc.text('Ciocolatto · Sistema de Gestión de Heladería', margin, pageH - 5)
       doc.text(`Total del día: $${totalRevenue.toFixed(2)} · ${sales.length} órdenes · Transferencia: $${transRevenue.toFixed(2)}`, pageW - margin, pageH - 5, { align: 'right' })
 
-      doc.save(`Reporte_Ciocolatto_${new Date().toISOString().split('T')[0]}.pdf`)
-      toast.success("Reporte PDF generado exitosamente")
+      const fileName = `Reporte_Ciocolatto_${new Date().toISOString().split('T')[0]}.pdf`
+      
+      // Output handling for different browsers
+      if (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+        // More robust approach for mobile: Open in a new tab
+        const blob = doc.output('blob');
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+        toast.success("PDF abierto en una nueva pestaña (Mobile)");
+      } else {
+        doc.save(fileName)
+        toast.success("Reporte PDF generado exitosamente")
+      }
 
+      toast.dismiss(loadingToast)
       setSalesHistory([])
-      toast.success("Día finalizado. Los datos se conservan en la base de datos.")
+      toast.success("Día finalizado correctamente.", { duration: 5000 })
     } catch (e) {
-      console.error(e)
-      toast.error("Hubo un problema al finalizar el día")
+      console.error("PDF Generation Error:", e)
+      toast.dismiss(loadingToast)
+      toast.error("Error al generar el PDF. Verifica la conexión.")
+    } finally {
+      setIsGeneratingPdf(false)
     }
   }
 
@@ -635,12 +664,23 @@ export default function OrdersPage() {
               </Button>
               <Button
                 onClick={handleFinishDay}
+                disabled={isGeneratingPdf}
                 variant="outline"
-                className="rounded-xl h-10 md:h-12 px-3 md:px-6 border-zinc-300 hover:bg-zinc-100 bg-white shadow-sm text-zinc-700 text-xs font-semibold md:text-sm flex-1 md:flex-none justify-center"
+                className={`rounded-xl h-10 md:h-12 px-3 md:px-6 border-zinc-300 hover:bg-zinc-100 bg-white shadow-sm text-zinc-700 text-xs font-semibold md:text-sm flex-1 md:flex-none justify-center transition-all ${isGeneratingPdf ? 'opacity-50' : ''}`}
               >
-                <CheckSquare className="w-4 h-4 md:mr-2 flex-shrink-0" />
-                <span className="hidden md:inline">Finalizar Día</span>
-                <span className="md:hidden ml-1">Cerrar</span>
+                {isGeneratingPdf ? (
+                   <span className="flex items-center gap-2">
+                     <div className="w-3 h-3 border-2 border-zinc-400 border-t-zinc-800 rounded-full animate-spin" />
+                     <span className="md:inline hidden">Generando...</span>
+                     <span className="md:hidden">...</span>
+                   </span>
+                ) : (
+                  <>
+                    <CheckSquare className="w-4 h-4 md:mr-2 flex-shrink-0" />
+                    <span className="hidden md:inline">Finalizar Día</span>
+                    <span className="md:hidden ml-1">Cerrar</span>
+                  </>
+                )}
               </Button>
             </div>
           </div>
